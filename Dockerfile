@@ -86,6 +86,9 @@ RUN sudo chown -R $USERNAME:$USERNAME /ros2_ws \
 COPY ./franka_entrypoint.sh /franka_entrypoint.sh
 RUN sudo chmod +x /franka_entrypoint.sh
 
+RUN vcs import /ros2_ws/src < /ros2_ws/src/franka.repos --recursive --skip-existing
+RUN colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
+
 # Set the default shell to bash and the workdir to the source directory
 SHELL [ "/bin/bash", "-c" ]
 ENTRYPOINT [ "/franka_entrypoint.sh" ]
