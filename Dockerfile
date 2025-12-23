@@ -1,96 +1,69 @@
-# Start with an official ROS 2 base image for the desired distribution
+# build stage
 FROM ros:jazzy-ros-base
 
-# Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     ROS_DISTRO=jazzy
 
-ARG USER_UID=1001
-ARG USER_GID=1001
-ARG USERNAME=user
+# configurable via .env but with sensible defaults for production
+ARG USER_UID=1000
+ARG USER_GID=1000
+ARG USERNAME=franka
 
-# Install essential packages and ROS development tools
+# install build dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        bash-completion \
-        curl \
-        gdb \
-        git \
-        nano \
-        openssh-client \
-        python3-colcon-argcomplete \
-        python3-colcon-common-extensions \
-        sudo \
-        vim \
+    python3-colcon-common-extensions \
+    python3-rosdep \
+    python3-vcstool \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Setup user configuration
+# create non-root user without sudo
 RUN groupadd --gid $USER_GID $USERNAME \
     && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME \
     && echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers \
     && echo "source /opt/ros/$ROS_DISTRO/setup.bash" >> /home/$USERNAME/.bashrc \
-    && echo "source /usr/share/colcon_argcomplete/hook/colcon-argcomplete.bash" >> /home/$USERNAME/.bashrc
-    
+    && echo "source /ros2_ws/install/setup.bash" >> /home/$USERNAME/.bashrc
+
 USER $USERNAME
 
-# Install some ROS 2 dependencies to create a cache layer
-RUN sudo apt-get update \
-    && sudo apt-get install -y --no-install-recommends \
-        ros-jazzy-gz-sim-vendor \
-        ros-jazzy-gz-plugin-vendor \
-        ros-jazzy-sdformat-urdf \
-        ros-jazzy-joint-state-publisher-gui \
-        ros-jazzy-ros2controlcli \
-        ros-jazzy-controller-interface \
-        ros-jazzy-hardware-interface-testing \
-        ros-jazzy-ament-cmake-clang-format \
-        ros-jazzy-ament-cmake-clang-tidy \
-        ros-jazzy-controller-manager \
-        ros-jazzy-ros2-control-test-assets \
-        ros-jazzy-hardware-interface \
-        ros-jazzy-control-msgs \
-        ros-jazzy-backward-ros \
-        ros-jazzy-generate-parameter-library \
-        ros-jazzy-realtime-tools \
-        ros-jazzy-joint-state-publisher \
-        ros-jazzy-joint-state-broadcaster \
-        ros-jazzy-moveit-ros-move-group \
-        ros-jazzy-moveit-kinematics \
-        ros-jazzy-moveit-planners-ompl \
-        ros-jazzy-moveit-ros-visualization \
-        ros-jazzy-joint-trajectory-controller \
-        ros-jazzy-moveit-simple-controller-manager \
-        ros-jazzy-rviz2 \
-        ros-jazzy-xacro \
+# install only runtime dependencies
+RUN sudo apt-get update && \
+    sudo apt-get install -y --no-install-recommends \
+    ros-jazzy-controller-manager \
+    ros-jazzy-joint-state-broadcaster \
+    ros-jazzy-joint-trajectory-controller \
+    ros-jazzy-moveit \
     && sudo apt-get clean \
     && sudo rm -rf /var/lib/apt/lists/*
 
 WORKDIR /ros2_ws
 
-# Install the missing ROS 2 dependencies
-COPY . /ros2_ws/src
-RUN sudo chown -R $USERNAME:$USERNAME /ros2_ws \
-    && vcs import src < src/franka.repos --recursive --skip-existing \
-    && sudo apt-get update \
-    && rosdep update \
+# copy source and import additional repos
+COPY --chown=$USERNAME:$USERNAME . /ros2_ws/src
+# RUN vcs import src < src/franka.repos --recursive --skip-existing
+RUN git clone --branch 2.1.0 --recursive https://github.com/frankarobotics/franka_description.git src/franka_description
+RUN git clone --branch 0.18.0 --recursive https://github.com/frankarobotics/libfranka.git src/libfranka
+
+RUN sudo apt-get update
+
+# install dependencies, skipping the packages we just imported
+RUN rosdep update \
     && rosdep install --from-paths src --ignore-src --rosdistro $ROS_DISTRO -y \
+    --skip-keys="libfranka franka_description" \
     && sudo apt-get clean \
-    && sudo rm -rf /var/lib/apt/lists/* \
-    && rm -rf /home/$USERNAME/.ros \
-    && rm -rf src \
-    && mkdir -p src
+    && sudo rm -rf /var/lib/apt/lists/*
 
-COPY ./franka_entrypoint.sh /franka_entrypoint.sh
-RUN sudo chmod +x /franka_entrypoint.sh
+# build the workspace
+RUN /bin/bash -c ". /opt/ros/$ROS_DISTRO/setup.bash && \
+    colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release"
 
-RUN vcs import /ros2_ws/src < /ros2_ws/src/franka.repos --recursive --skip-existing
-RUN colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
+COPY --chown=$USERNAME:$USERNAME ./franka_entrypoint.sh /franka_entrypoint.sh
+RUN chmod +x /franka_entrypoint.sh
 
-# Set the default shell to bash and the workdir to the source directory
-SHELL [ "/bin/bash", "-c" ]
+WORKDIR /ros2_ws
+
 ENTRYPOINT [ "/franka_entrypoint.sh" ]
 CMD [ "/bin/bash" ]
-WORKDIR /ros2_ws
